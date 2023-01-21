@@ -17,6 +17,8 @@ const (
 	// DefaultAuthPluginName is the default plugin name.
 	DefaultAuthPluginName = "mysql_native_password"
 
+	CachingSHA2PasswordPluginName = "caching_sha2_password"
+
 	// DefaultServerCapability is the default server capability.
 	DefaultServerCapability = sqldb.CLIENT_LONG_PASSWORD |
 		sqldb.CLIENT_LONG_FLAG |
@@ -28,7 +30,7 @@ const (
 		sqldb.CLIENT_DEPRECATE_EOF |
 		sqldb.CLIENT_SECURE_CONNECTION
 
-		// DefaultClientCapability is the default client capability.
+	// DefaultClientCapability is the default client capability.
 	DefaultClientCapability = sqldb.CLIENT_LONG_PASSWORD |
 		sqldb.CLIENT_LONG_FLAG |
 		sqldb.CLIENT_PROTOCOL_41 |

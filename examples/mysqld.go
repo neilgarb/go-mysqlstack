@@ -1,3 +1,5 @@
+//go:build example
+
 /*
  * go-mysqlstack
  * xelabs.org

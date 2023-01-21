@@ -10,7 +10,15 @@
 package driver
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -18,7 +26,6 @@ import (
 	"github.com/xelabs/go-mysqlstack/packet"
 	"github.com/xelabs/go-mysqlstack/proto"
 	"github.com/xelabs/go-mysqlstack/sqldb"
-
 	"github.com/xelabs/go-mysqlstack/sqlparser/depends/common"
 	querypb "github.com/xelabs/go-mysqlstack/sqlparser/depends/query"
 	"github.com/xelabs/go-mysqlstack/sqlparser/depends/sqltypes"
@@ -61,69 +68,230 @@ func (c *conn) handleErrorPacket(data []byte) error {
 	return nil
 }
 
+// Much of the handshake code was copied and adapted from github.com/go-sql-driver/mysql.
+// That repo is distributed under the MPL 2.0 licence.
+//
+//   This Source Code Form is subject to the terms of the Mozilla Public
+//   License, v. 2.0. If a copy of the MPL was not distributed with this
+//   file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 func (c *conn) handShake(username, password, database, charset string) error {
-	var err error
-	var data []byte
-
-	//Parses the initial handshake from the server.
-	{
-		// greeting read
-		if data, err = c.packets.Next(); err != nil {
-			return err
-		}
-
-		// check greeting packet
-		if err = c.handleErrorPacket(data); err != nil {
-			return err
-		}
-
-		// unpack greeting packet
-		if err = c.greeting.UnPack(data); err != nil {
-			return err
-		}
-
-		// check greating Capability
-		if c.greeting.Capability&sqldb.CLIENT_PROTOCOL_41 == 0 {
-			err = sqldb.NewSQLError(sqldb.CR_VERSION_ERROR, "cannot connect to servers earlier than 4.1")
-			return err
-		}
+	salt, plugin, err := c.readHandshakePacket()
+	if err != nil {
+		return err
 	}
-
-	{
-		cs, ok := sqldb.CharacterSetMap[strings.ToLower(charset)]
-		if !ok {
-			cs = sqldb.CharacterSetUtf8
-		}
-		// auth pack
-		data := c.auth.Pack(
-			proto.DefaultClientCapability,
-			cs,
-			username,
-			password,
-			c.greeting.Salt,
-			database,
-		)
-
-		// auth write
-		if err = c.packets.Write(data); err != nil {
-			return err
-		}
-
-		// clean the authreponse bytes to improve the gc pause.
-		c.auth.CleanAuthResponse()
+	if plugin == "" {
+		plugin = proto.DefaultAuthPluginName
 	}
-
-	{
-		// read
-		if data, err = c.packets.Next(); err != nil {
-			return err
-		}
-
-		if err = c.handleErrorPacket(data); err != nil {
-			return err
-		}
+	authResp, err := c.auth.Scramble(plugin, password, salt)
+	if err != nil {
+		return err
+	}
+	if err = c.writeHandshakeResponsePacket(authResp, plugin, charset, username, database); err != nil {
+		return err
+	}
+	if err = c.handleAuthResult(salt, plugin, password); err != nil {
+		return err
 	}
 	return nil
+}
+
+func (c *conn) readHandshakePacket() (data []byte, plugin string, err error) {
+	data, err = c.packets.Next()
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.handleErrorPacket(data); err != nil {
+		return nil, "", err
+	}
+	if err := c.greeting.UnPack(data); err != nil {
+		return nil, "", err
+	}
+	if c.greeting.Capability&sqldb.CLIENT_PROTOCOL_41 == 0 {
+		return nil, "", sqldb.NewSQLError(sqldb.CR_VERSION_ERROR, "cannot connect to servers earlier than 4.1")
+	}
+	return c.greeting.Salt, c.greeting.AuthPluginName, nil
+}
+
+func (c *conn) writeHandshakeResponsePacket(authResp []byte, plugin, charset, username, database string) error {
+	cs, ok := sqldb.CharacterSetMap[strings.ToLower(charset)]
+	if !ok {
+		cs = sqldb.CharacterSetUtf8
+	}
+	return c.packets.Write(c.auth.Pack(
+		proto.DefaultClientCapability,
+		plugin,
+		cs,
+		username,
+		authResp,
+		database,
+	))
+}
+
+func (c *conn) handleAuthResult(oldAuthData []byte, plugin, password string) error {
+	authData, newPlugin, err := c.readAuthResult()
+	if err != nil {
+		return err
+	}
+
+	if newPlugin != "" {
+		if authData == nil {
+			authData = oldAuthData
+		} else {
+			copy(oldAuthData, authData)
+		}
+		plugin = newPlugin
+		authResp, err := c.auth.Scramble(plugin, password, authData)
+		if err != nil {
+			return err
+		}
+		if err = c.packets.Write(authResp); err != nil {
+			return err
+		}
+		authData, newPlugin, err = c.readAuthResult()
+		if err != nil {
+			return err
+		}
+		if newPlugin != "" {
+			return errors.New("malformed packet")
+		}
+	}
+
+	switch plugin {
+	// https://insidemysql.com/preparing-your-community-connector-for-mysql-8-part-2-sha256/
+	case "caching_sha2_password":
+		switch len(authData) {
+		case 0:
+			return nil // auth successful
+		case 1:
+			switch authData[0] {
+			case 3: // cachingSha2PasswordFastAuthSuccess
+				if err = c.readResultOK(); err == nil {
+					return nil // auth successful
+				}
+			case 4: // cachingSha2PasswordPerformFullAuthentication:
+				//if mc.cfg.TLS != nil || mc.cfg.Net == "unix" {
+				//	err = mc.writeAuthSwitchPacket(append([]byte(mc.cfg.Passwd), 0))
+				//	if err != nil {
+				//		return err
+				//	}
+				//} else {
+				// request public key from server
+				pubKey, err := c.getPubKey()
+				if err != nil {
+					return err
+				}
+				if err := c.sendEncryptedPassword(password, oldAuthData, pubKey); err != nil {
+					return err
+				}
+				//}
+				return c.readResultOK()
+			default:
+				return errors.New("malformed packet")
+			}
+		default:
+			return errors.New("malformed packet")
+		}
+	case "sha256_password":
+		switch len(authData) {
+		case 0:
+			return nil // auth successful
+		default:
+			block, _ := pem.Decode(authData)
+			if block == nil {
+				return fmt.Errorf("no Pem data found, data: %s", authData)
+			}
+			pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+			if err != nil {
+				return err
+			}
+			err = c.sendEncryptedPassword(password, oldAuthData, pubKey.(*rsa.PublicKey))
+			if err != nil {
+				return err
+			}
+			return c.readResultOK()
+		}
+	default:
+		return nil // auth successful
+	}
+
+	return nil
+}
+
+func (c *conn) sendEncryptedPassword(password string, authData []byte, pubKey *rsa.PublicKey) error {
+	enc, err := encryptPassword(password, authData, pubKey)
+	if err != nil {
+		return err
+	}
+	return c.packets.Write(enc)
+}
+
+func encryptPassword(password string, seed []byte, pubKey *rsa.PublicKey) ([]byte, error) {
+	plain := make([]byte, len(password)+1)
+	copy(plain, password)
+	for i := range plain {
+		j := i % len(seed)
+		plain[i] ^= seed[j]
+	}
+	return rsa.EncryptOAEP(sha1.New(), rand.Reader, pubKey, plain, nil)
+}
+
+func (c *conn) getPubKey() (*rsa.PublicKey, error) {
+	if err := c.packets.Write([]byte{2}); err != nil { // cachingSha2PasswordRequestPublicKey
+		return nil, err
+	}
+	data, err := c.packets.Next()
+	if err != nil {
+		return nil, err
+	} else if data[0] != 0x01 { //  iAuthMoreData {
+		return nil, fmt.Errorf("unexpect resp from server for caching_sha2_password perform full authentication")
+	}
+	block, rest := pem.Decode(data[1:])
+	if block == nil {
+		return nil, fmt.Errorf("no PEM data found, data: %s", rest)
+	}
+	pkix, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	return pkix.(*rsa.PublicKey), nil
+}
+
+func (c *conn) readAuthResult() ([]byte, string, error) {
+	data, err := c.packets.Next()
+	if err != nil {
+		return nil, "", err
+	}
+	switch data[0] {
+	case proto.OK_PACKET:
+		return nil, "", nil
+	case 0x01:
+		return data[1:], "", nil
+	case proto.EOF_PACKET:
+		if len(data) == 1 {
+			return nil, "mysql_old_password", nil
+		}
+		pluginEndIndex := bytes.IndexByte(data, 0x00)
+		if pluginEndIndex < 0 {
+			return nil, "", errors.New("malformed packet")
+		}
+		plugin := string(data[1:pluginEndIndex])
+		authData := data[pluginEndIndex+1:]
+		return authData, plugin, nil
+	default:
+		return nil, "", c.handleErrorPacket(data)
+	}
+}
+
+func (c *conn) readResultOK() error {
+	data, err := c.packets.Next()
+	if err != nil {
+		return err
+	}
+	if data[0] == proto.OK_PACKET {
+		return nil
+	}
+	return c.handleErrorPacket(data)
 }
 
 // NewConn used to create a new client connection.

@@ -34,7 +34,7 @@ type Greeting struct {
 	Capability     uint32
 	ConnectionID   uint32
 	serverVersion  string
-	authPluginName string
+	AuthPluginName string
 	Salt           []byte
 }
 
@@ -213,7 +213,7 @@ func (g *Greeting) UnPack(payload []byte) error {
 
 	// string[NUL]    auth-plugin name
 	if (g.Capability & sqldb.CLIENT_PLUGIN_AUTH) > 0 {
-		if g.authPluginName, err = buf.ReadStringNUL(); err != nil {
+		if g.AuthPluginName, err = buf.ReadStringNUL(); err != nil {
 			return sqldb.NewSQLError(sqldb.ER_MALFORMED_PACKET, "extracting greeting auth-plugin-name failed")
 		}
 	}

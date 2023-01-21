@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/xelabs/go-mysqlstack/sqldb"
 
+	"github.com/xelabs/go-mysqlstack/sqldb"
 	"github.com/xelabs/go-mysqlstack/sqlparser/depends/common"
 )
 
@@ -24,7 +24,7 @@ func TestGreetingUnPack(t *testing.T) {
 
 	// normal
 	{
-		want.authPluginName = "mysql_native_password"
+		want.AuthPluginName = "mysql_native_password"
 		err := got.UnPack(want.Pack())
 		assert.Nil(t, err)
 		assert.Equal(t, want, got)
@@ -34,7 +34,7 @@ func TestGreetingUnPack(t *testing.T) {
 	// 1. off sqldb.CLIENT_PLUGIN_AUTH
 	{
 		want.Capability = want.Capability &^ sqldb.CLIENT_PLUGIN_AUTH
-		want.authPluginName = "mysql_native_password"
+		want.AuthPluginName = "mysql_native_password"
 		err := got.UnPack(want.Pack())
 		assert.Nil(t, err)
 		assert.Equal(t, want, got)
@@ -43,7 +43,7 @@ func TestGreetingUnPack(t *testing.T) {
 	// 2. off sqldb.CLIENT_SECURE_CONNECTION
 	{
 		want.Capability &= ^sqldb.CLIENT_SECURE_CONNECTION
-		want.authPluginName = "mysql_native_password"
+		want.AuthPluginName = "mysql_native_password"
 		err := got.UnPack(want.Pack())
 		assert.Nil(t, err)
 		assert.Equal(t, want, got)
@@ -52,7 +52,7 @@ func TestGreetingUnPack(t *testing.T) {
 	// 3. off sqldb.CLIENT_PLUGIN_AUTH && sqldb.CLIENT_SECURE_CONNECTION
 	{
 		want.Capability &= (^sqldb.CLIENT_PLUGIN_AUTH ^ sqldb.CLIENT_SECURE_CONNECTION)
-		want.authPluginName = "mysql_native_password"
+		want.AuthPluginName = "mysql_native_password"
 		err := got.UnPack(want.Pack())
 		assert.Nil(t, err)
 		assert.Equal(t, want, got)

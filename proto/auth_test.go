@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"github.com/xelabs/go-mysqlstack/sqldb"
 	"github.com/xelabs/go-mysqlstack/sqlparser/depends/common"
 )
@@ -117,10 +118,10 @@ func TestAuthUnPack(t *testing.T) {
 	got := NewAuth()
 	err := got.UnPack(want.Pack(
 		DefaultClientCapability,
+		DefaultAuthPluginName,
 		0x02,
 		"sbtest",
-		"sbtest",
-		DefaultSalt,
+		nativePassword("sbtest", DefaultSalt),
 		"sbtest",
 	))
 	assert.Nil(t, err)
@@ -141,10 +142,10 @@ func TestAuthWithoutPWD(t *testing.T) {
 	got := NewAuth()
 	err := got.UnPack(want.Pack(
 		DefaultClientCapability,
+		DefaultAuthPluginName,
 		0x02,
 		"sbtest",
-		"",
-		DefaultSalt,
+		nil,
 		"sbtest",
 	))
 	assert.Nil(t, err)
@@ -163,10 +164,10 @@ func TestAuthWithoutDB(t *testing.T) {
 	got := NewAuth()
 	err := got.UnPack(want.Pack(
 		DefaultClientCapability,
+		DefaultAuthPluginName,
 		0x02,
 		"sbtest",
-		"sbtest",
-		DefaultSalt,
+		nativePassword("sbtest", DefaultSalt),
 		"",
 	))
 	assert.Nil(t, err)
@@ -187,10 +188,10 @@ func TestAuthWithoutSecure(t *testing.T) {
 	got := NewAuth()
 	err := got.UnPack(want.Pack(
 		DefaultClientCapability&^sqldb.CLIENT_SECURE_CONNECTION,
+		DefaultAuthPluginName,
 		0x02,
 		"root",
-		"password",
-		DefaultSalt,
+		nativePassword("password", DefaultSalt),
 		"test_db",
 	))
 	got.authResponseLen = 20
@@ -210,10 +211,10 @@ func TestAuthWithoutPluginAuth(t *testing.T) {
 	got := NewAuth()
 	err := got.UnPack(want.Pack(
 		DefaultClientCapability,
+		DefaultAuthPluginName,
 		0x02,
 		"sbtest",
-		"sbtest",
-		DefaultSalt,
+		nil,
 		"",
 	))
 	assert.Nil(t, err)

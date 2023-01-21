@@ -11,6 +11,7 @@ package proto
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/xelabs/go-mysqlstack/sqldb"
@@ -123,10 +124,20 @@ func (a *Auth) UnPack(payload []byte) error {
 	return nil
 }
 
+func (a *Auth) Scramble(pluginName, password string, salt []byte) ([]byte, error) {
+	switch pluginName {
+	case DefaultAuthPluginName:
+		return nativePassword(password, salt), nil
+	case CachingSHA2PasswordPluginName:
+		return cachingSHA2Password(password, salt), nil
+	default:
+		return nil, fmt.Errorf("auth.scramble: unhandled plugin name: %v", pluginName)
+	}
+}
+
 // Pack used to pack a HandshakeResponse41 packet.
-func (a *Auth) Pack(capabilityFlags uint32, charset uint8, username string, password string, salt []byte, database string) []byte {
+func (a *Auth) Pack(capabilityFlags uint32, pluginName string, charset uint8, username string, authResponse []byte, database string) []byte {
 	buf := common.NewBuffer(256)
-	authResponse := nativePassword(password, salt)
 	if len(database) > 0 {
 		capabilityFlags |= sqldb.CLIENT_CONNECT_WITH_DB
 	} else {
@@ -167,7 +178,7 @@ func (a *Auth) Pack(capabilityFlags uint32, charset uint8, username string, pass
 	}
 
 	// string[NUL] auth plugin name
-	buf.WriteString(DefaultAuthPluginName)
+	buf.WriteString(pluginName)
 	buf.WriteZero(1)
 
 	// CLIENT_CONNECT_ATTRS none
@@ -203,6 +214,32 @@ func nativePassword(password string, salt []byte) []byte {
 	// srambleHash = stage1Hash ^ stage2Hash
 	scramble := make([]byte, len(stage2))
 	for i := range stage2 {
+		scramble[i] = stage1[i] ^ stage2[i]
+	}
+	return scramble
+}
+
+func cachingSHA2Password(password string, salt []byte) []byte {
+	//XOR(SHA256(password), SHA256(SHA256(SHA256(password)), Nonce))
+	if password == "" {
+		return nil
+	}
+
+	crypt := sha256.New()
+	crypt.Write([]byte(password))
+	stage1 := crypt.Sum(nil)
+
+	crypt.Reset()
+	crypt.Write(stage1)
+	stage2 := crypt.Sum(nil)
+
+	crypt.Reset()
+	crypt.Write(stage2)
+	crypt.Write(salt)
+	stage2 = crypt.Sum(nil)
+
+	scramble := make([]byte, len(stage2))
+	for i := range stage1 {
 		scramble[i] = stage1[i] ^ stage2[i]
 	}
 	return scramble
